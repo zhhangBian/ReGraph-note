@@ -8,62 +8,77 @@
 
 // 将初始分区分为 Dense/Sparse，并为异构核进一步划分子分区
 int schedulePartitions(partition_container_dt &partition_container){
-    
+
     //1. TODO: find out a suit implementation (number of big kernels and small kernels) as well as number of big or little paritions.
 
-    //2. Spilt dense partitions into sub-partitions; merge sparse partitions to big partitions.   
+    //2. Spilt dense partitions into sub-partitions; merge sparse partitions to big partitions.
     //partition_container.num_dense_partitions = partition_container.num_partitions;
     //partition_container.num_dense_partitions = 0; //partition_container.num_partitions; //std::min(2, partition_container.num_partitions);
-#if (LITTLE_KERNEL_NUM && BIG_KERNEL_NUM)
-    if(partition_container.num_dense_partitions > partition_container.num_partitions) 
+// 同时支持大核/小核：限在分区总数内
+    #if (LITTLE_KERNEL_NUM && BIG_KERNEL_NUM)
+    if(partition_container.num_dense_partitions > partition_container.num_partitions)
         partition_container.num_dense_partitions = partition_container.num_partitions;
+// 仅小核：全为密集分区
 #elif LITTLE_KERNEL_NUM
     partition_container.num_dense_partitions = partition_container.num_partitions;
+// 仅大核：不设密集分区
 #elif BIG_KERNEL_NUM
     partition_container.num_dense_partitions = 0;
 #endif
-    
+
     std::cout << "num_dense_partitions: " << partition_container.num_dense_partitions << std::endl;
     partition_container.DP.resize(partition_container.num_dense_partitions);
 
+    // 为dense分区进行划分
+    // 为每个密集分区生成多个子分区，分配到多个小核并行处理
     DEBUG_PRINTF("[INFO] Paritioning dense paritions into subparitions...\n");
     for (uint i = 0; i < partition_container.num_dense_partitions; i ++){
-        
+
+        // 子分区数量
         partition_container.DP[i].num_subpartitions = LITTLE_KERNEL_NUM; // this number should be the number of big kernels
         partition_container.DP[i].subP.resize(partition_container.DP[i].num_subpartitions);
-        
+
         // ********************* magic estimation logic ! *******************************//
+        // 估计相关的参数
         #define EDGES_PER_CYCLE 8
         #define SRC_PER_CYCLE 10
         #define L_PROFILE_WINDOW 64
+        // 计算边访问周期：获取相应的边的数量
         uint edge_access_cycles = partition_container.P[i].edge_array_host.size()/ 2 / EDGES_PER_CYCLE; // in cycles
         uint src_access_cycles = partition_container.num_graph_vertices / SRC_PER_CYCLE; // in cycles
         uint estimated_cycles = 0;
         uint last_window = 0;
         uint last_eid = 0;
         uint last_src = 0;
+        // 估算相应的时间
+        // 每64条边为窗口，按源顶点跳跃建模访问延迟（慢速路径与边访问并行）
+        // 以窗口内源跳跃除以 SRC_PER_CYCLE 的耗时与边处理周期取较大值更新累积周期
         std::vector<std::pair<uint, uint>> eid_estcycle_marker;
+        // 对边的数量进行遍历
         for (uint eid = 0; eid < partition_container.P[i].edge_array_host.size()/2; eid ++){
+            // 对src去除最高位
             uint src = partition_container.P[i].edge_array_host[eid * 2] & 0x7fffffff;
             uint window = (int) (eid/L_PROFILE_WINDOW);
             if(window != last_window){
-                estimated_cycles += ((src-last_src)/SRC_PER_CYCLE) > (L_PROFILE_WINDOW/EDGES_PER_CYCLE)? 
+                estimated_cycles += ((src-last_src)/SRC_PER_CYCLE) > (L_PROFILE_WINDOW/EDGES_PER_CYCLE)?
                                      ((src-last_src)/SRC_PER_CYCLE) : (L_PROFILE_WINDOW/EDGES_PER_CYCLE);
                 //estimated_cycles +=    (SRC_BUFFER_SIZE/SRC_PER_CYCLE) + ((eid - last_eid)/EDGES_PER_CYCLE);
 
                 last_window = window;
                 last_src = src;
+                // 获取预测的时间周期
                 eid_estcycle_marker.push_back(std::make_pair(estimated_cycles, eid));
             }
         }
 
         std::cout << "[EST-DENSE] " << std::setw(3) << edge_access_cycles << " edge_access_cycles; " \
                 << src_access_cycles << " src_access_cycles " \
-                << estimated_cycles << " estimated_cycles " \      
-                << estimated_cycles / 200000.0 << " estimated time (ms). " \ 
+                << estimated_cycles << " estimated_cycles " \
+                << estimated_cycles / 200000.0 << " estimated time (ms). " \
                 << eid_estcycle_marker.size() << " eid_estcycle_marker size. "
                 << std::endl;
 
+        // 预测的总周期
         partition_container.DP[i].est_cycles = estimated_cycles;
         uint target_cylces_per_subp = estimated_cycles / partition_container.DP[i].num_subpartitions + 1;
         uint last_subpi = 0;
@@ -79,9 +94,9 @@ int schedulePartitions(partition_container_dt &partition_container){
             }
         }
         split_range.push_back(partition_container.P[i].edge_array_host.size()/2); //for the first subparition...
-        
+
         for (uint subpi = 0; subpi < split_range.size() -1; subpi ++){
-            partition_container.DP[i].subP[subpi].edge_array_host.resize(2 * (split_range[subpi+1] - split_range[subpi]));            
+            partition_container.DP[i].subP[subpi].edge_array_host.resize(2 * (split_range[subpi+1] - split_range[subpi]));
             std::copy(
                 partition_container.P[i].edge_array_host.begin() + (split_range[subpi] * 2),
                 partition_container.P[i].edge_array_host.begin() + (split_range[subpi+1] * 2),
@@ -93,7 +108,7 @@ int schedulePartitions(partition_container_dt &partition_container){
             //std::cout << i << "th SP " << subpi << "th subp edge num: "<< partition_container.SP[i].subP[subpi].edge_array_host.size() / 2 << " . " << std::endl;
             if(0 == (partition_container.DP[i].subP[subpi].edge_array_host.size() / 2)){
                 for(int di = 0; di < 8; di ++) {
-                    uint src = partition_container.P[i].edge_array_host.end()[-2] | 0x80000000; 
+                    uint src = partition_container.P[i].edge_array_host.end()[-2] | 0x80000000;
                     uint dst = ENDFLAG | 0x80000000; // they won't be processed if the most significant bit is set to 1.
                     partition_container.DP[i].subP[subpi].edge_array_host.insert(partition_container.DP[i].subP[subpi].edge_array_host.end(), {src, dst});
                 }
@@ -115,27 +130,27 @@ int schedulePartitions(partition_container_dt &partition_container){
     partition_container.num_sparse_partitions = ((partition_container.num_sparse_partitions + (MERGE_NUM-1)) / MERGE_NUM);
     partition_container.SP.resize(partition_container.num_sparse_partitions);
     std::cout << "num_sparse_partitions: " << partition_container.num_sparse_partitions << std::endl;
-    
+
     for (uint i = 0; i < partition_container.num_sparse_partitions; i ++){
-        
+
         std::vector<uint> tmp_edge_buffer;
         for(int k = 0; k < MERGE_NUM; k ++){
             uint parti = partition_container.num_dense_partitions + i * MERGE_NUM + k;
             if (parti < partition_container.num_partitions)
-                tmp_edge_buffer.insert( tmp_edge_buffer.end(), 
-                                        partition_container.P[parti].edge_array_host.begin(), 
+                tmp_edge_buffer.insert( tmp_edge_buffer.end(),
+                                        partition_container.P[parti].edge_array_host.begin(),
                                         partition_container.P[parti].edge_array_host.end()
                                         );
         }
-        
+
         std::vector<std::pair<uint, uint>> edge_pair_array;
 
         for(uint k = 0; k < tmp_edge_buffer.size()/2; k++){
             edge_pair_array.push_back(std::make_pair(tmp_edge_buffer[2*k], tmp_edge_buffer[2*k + 1]));
         }
-        
+
         // Sort the vector of pairs
-        std::sort(std::begin(edge_pair_array), std::end(edge_pair_array), 
+        std::sort(std::begin(edge_pair_array), std::end(edge_pair_array),
                     [&](const auto& a, const auto& b)
                     {return (a.first & (0x80000000 -1)) < (b.first & (0x80000000 -1));}
                 );
@@ -153,12 +168,13 @@ int schedulePartitions(partition_container_dt &partition_container){
         //std::cout << partition_container.SP[i].dst_offset << std::endl;
     }
 
+    // 为sparse分区进行划分
     DEBUG_PRINTF("[INFO] Paritioning sparse paritions into subparitions...\n");
     for (uint i = 0; i < partition_container.num_sparse_partitions; i ++){
-        
+
         partition_container.SP[i].num_subpartitions = BIG_KERNEL_NUM; // this number should be the number of big kernels
         partition_container.SP[i].subP.resize(partition_container.SP[i].num_subpartitions);
-        
+
         // ********************* magic estimation logic ! *******************************//
         #define EDGES_PER_CYCLE 8
         #define MEMORY_REQ_CYCLE 1
@@ -195,9 +211,9 @@ int schedulePartitions(partition_container_dt &partition_container){
         }
         std::cout << "[EST-SPARSE] " << partition_container.SP[i].edge_array_host.size()/2 << " edges; " \
                 << std::setw(3) << edge_access_cycles << " edge_access_cycles; " \
-                << estimated_cycles << " estimated_cycles " \      
-                << estimated_cycles / 200000.0 << " estimated time (ms). " \  
-                << eid_estcycle_marker.size() << " eid_marker_size. "    
+                << estimated_cycles << " estimated_cycles " \
+                << estimated_cycles / 200000.0 << " estimated time (ms). " \
+                << eid_estcycle_marker.size() << " eid_marker_size. "
                 << std::endl;
 
         partition_container.SP[i].est_cycles = estimated_cycles;
@@ -215,9 +231,9 @@ int schedulePartitions(partition_container_dt &partition_container){
             }
         }
         split_range.push_back(partition_container.SP[i].edge_array_host.size()/2); //for the first subparition...
-                
+
         for (uint subpi = 0; subpi < split_range.size() - 1; subpi ++){
-            partition_container.SP[i].subP[subpi].edge_array_host.resize(2 * (split_range[subpi+1] - split_range[subpi]));            
+            partition_container.SP[i].subP[subpi].edge_array_host.resize(2 * (split_range[subpi+1] - split_range[subpi]));
             std::copy(
                 partition_container.SP[i].edge_array_host.begin() + (split_range[subpi] * 2),
                 partition_container.SP[i].edge_array_host.begin() + (split_range[subpi+1] * 2),
@@ -230,7 +246,7 @@ int schedulePartitions(partition_container_dt &partition_container){
             //std::cout << i << "th SP " << subpi << "th subp edge num: "<< partition_container.SP[i].subP[subpi].edge_array_host.size() / 2 << " . " << std::endl;
             if(0 == (partition_container.SP[i].subP[subpi].edge_array_host.size() / 2)){
                 for(int di = 0; di < 8; di ++) {
-                    uint src = partition_container.SP[i].edge_array_host.end()[-2] | 0x80000000; 
+                    uint src = partition_container.SP[i].edge_array_host.end()[-2] | 0x80000000;
                     uint dst = ENDFLAG | 0x80000000; // they won't be processed if the most significant bit is set to 1.
                     partition_container.SP[i].subP[subpi].edge_array_host.insert(partition_container.SP[i].subP[subpi].edge_array_host.end(), {src, dst});
                 }
@@ -266,7 +282,7 @@ int schedulePartitions(partition_container_dt &partition_container){
 
 // transfer edge lists vertex properties according to the dstination kernel's connectivity.
 int transferPartitions(partition_container_dt &partition_container, acc_descriptor_dt &acc){
-    
+
     cl_int err;
     std::vector<uint> hbm_bank_usage(32, 0);
 
@@ -282,7 +298,7 @@ int transferPartitions(partition_container_dt &partition_container, acc_descript
 
             hbm_bank_usage[pc_id] += partition_container.DP[part_id].subP[subpart_id].edge_array_host.size();
         }
-    }   
+    }
     for (uint part_id = 0; part_id < partition_container.num_sparse_partitions; part_id++){
 
         for(uint subpart_id = 0; subpart_id < partition_container.SP[part_id].num_subpartitions; subpart_id ++){
@@ -293,16 +309,16 @@ int transferPartitions(partition_container_dt &partition_container, acc_descript
             //std::cout << pc_id  << " " << partition_container.SP[part_id].subP[subpart_id].kernel_id << std::endl;
             hbm_bank_usage[pc_id] += partition_container.SP[part_id].subP[subpart_id].edge_array_host.size();
         }
-    }   
+    }
     // report the usage of memory bank for edge lists....
     for (int i = 0; i < 32; i++) {
         int size_in_MB = hbm_bank_usage[i] * sizeof(uint) / 1024 / 1024;
         std::cout << "[INFO] " << i << "th kernel uses " << size_in_MB << " MB memory for edge list." << std::endl;
-        if (size_in_MB >= 256) 
+        if (size_in_MB >= 256)
         {
-            if (i < (2 * LITTLE_KERNEL_NUM)) 
+            if (i < (2 * LITTLE_KERNEL_NUM))
                 exit(-1);
-            else 
+            else
                 return 0;
         }
     }
@@ -313,7 +329,7 @@ int transferPartitions(partition_container_dt &partition_container, acc_descript
                     partition_container.DP[i].subP[subpart_id].edge_array_dev = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
                                         partition_container.DP[i].subP[subpart_id].edge_array_host.size() * sizeof(uint), &partition_container.DP[i].subP[subpart_id].edge_array_ext_ptr, &err));
             OCL_CHECK(err,
-                            err = acc.q.enqueueMigrateMemObjects({partition_container.DP[i].subP[subpart_id].edge_array_dev}, 0 /* 0 means from host*/));            
+                            err = acc.q.enqueueMigrateMemObjects({partition_container.DP[i].subP[subpart_id].edge_array_dev}, 0 /* 0 means from host*/));
         }
     }
 
@@ -324,12 +340,12 @@ int transferPartitions(partition_container_dt &partition_container, acc_descript
                     partition_container.SP[i].subP[subpart_id].edge_array_dev = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
                                         partition_container.SP[i].subP[subpart_id].edge_array_host.size() * sizeof(uint), &partition_container.SP[i].subP[subpart_id].edge_array_ext_ptr, &err));
             OCL_CHECK(err,
-                            err = acc.q.enqueueMigrateMemObjects({partition_container.SP[i].subP[subpart_id].edge_array_dev}, 0 /* 0 means from host*/));            
+                            err = acc.q.enqueueMigrateMemObjects({partition_container.SP[i].subP[subpart_id].edge_array_dev}, 0 /* 0 means from host*/));
         }
     }
     acc.q.finish();
 
-    
+
     DEBUG_PRINTF("Assign source vertices to device...\n");
     // each kernel keeps one replica of source vertices propertys
     for (int i = 0; i < NUM_KERNEL; i++) {
@@ -338,14 +354,14 @@ int transferPartitions(partition_container_dt &partition_container, acc_descript
         int pc_id = apply_kernel_hbm_mapping[i];//mapping[i]; //2 * i + 1; // change it according to the interfaces of kernels. 0, 2, 4, 6, ...
         //if(i >= partition_container.num_dense_partitions) pc_id = 2*i + 1 + 10;
         partition_container.src_prop_ext_ptr[i].flags = (pc_id | XCL_MEM_TOPOLOGY);
-    }   
-    
+    }
+
     for (int i = 0; i < NUM_KERNEL; i++) {
         OCL_CHECK(err,
                   partition_container.src_prop_dev[i] = cl::Buffer(acc.context, CL_MEM_READ_ONLY | CL_MEM_EXT_PTR_XILINX | CL_MEM_USE_HOST_PTR,
                                                 partition_container.vertex_property.size() * sizeof(uint), &partition_container.src_prop_ext_ptr[i], &err));
     }
-    
+
     // Copy edge lists of partitions to Device Global Memory will be encapsulated in transferDeviceData();
     for (int i = 0; i < NUM_KERNEL; i++) {
         OCL_CHECK(err,
@@ -358,9 +374,9 @@ int transferPartitions(partition_container_dt &partition_container, acc_descript
     for (int i = 0; i < NUM_KERNEL; i++) {
         partition_container.dst_tmp_prop_ext_ptr[i].obj = partition_container.dst_tmp_prop_host.data();
         partition_container.dst_tmp_prop_ext_ptr[i].param = 0;
-        int pc_id = apply_kernel_hbm_mapping[i];//mapping[i]; //2 * i + 1; // change it according to the interfaces of kernels. 
+        int pc_id = apply_kernel_hbm_mapping[i];//mapping[i]; //2 * i + 1; // change it according to the interfaces of kernels.
         partition_container.dst_tmp_prop_ext_ptr[i].flags = (pc_id | XCL_MEM_TOPOLOGY);
-    }   
+    }
 
     for (int i = 0; i < NUM_KERNEL; i++) {
         OCL_CHECK(err,

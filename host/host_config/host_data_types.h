@@ -70,6 +70,9 @@ struct PartitionDescriptor{
     unsigned int            dst_offset;
     unsigned int            dst_len;
 
+    // 存储顶点的id
+    // 保证边界对齐，便于直接 DMA
+    // 存储形式：交替的 src, dst，即 [src1, dst1, src2, dst2, ...]
     std::vector<uint, aligned_allocator<uint>> edge_array_host;
     cl::Buffer              edge_array_dev;
     cl_mem_ext_ptr_t        edge_array_ext_ptr;  
