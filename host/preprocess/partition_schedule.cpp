@@ -5,7 +5,8 @@
 #include "hbm_mapping.h"
 #include <numeric>      // std::iota
 #include <iomanip>
-   
+
+// 将初始分区分为 Dense/Sparse，并为异构核进一步划分子分区
 int schedulePartitions(partition_container_dt &partition_container){
     
     //1. TODO: find out a suit implementation (number of big kernels and small kernels) as well as number of big or little paritions.

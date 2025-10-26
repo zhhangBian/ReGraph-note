@@ -59,16 +59,40 @@ class Graph{
 
 };
 
+
+/*
+图为 0→2, 0→3, 1→2
+顶点ID:  0      1      2
+出边:    2,3    2      (没有)
+入边:    (没有) (没有)  0,1
+
+出边结构（Outgoing Edges）
+rpao = [0, 2, 3, 3]  // 前缀和，表示累计的出边数
+ciao = [2, 3, 2]     // 存储所有出边的目标顶点
+
+入边结构（Incoming Edges）  
+rpai = [0, 0, 0, 2]  // 前缀和，表示累计的入边数
+ciai = [0, 1]        // 存储所有入边的源顶点
+*/
+// 用于储存图结构
 class CSR{
     public:
-		const int vertexNum;
-		const int edgeNum;
+        // 顶点总数
+        const int vertexNum;
+        // 边总数
+        const int edgeNum;
+        // rpao[i] 是前 i 个顶点的出边总数
         std::vector<int> rpao; 
+        // 存储所有顶点的出边目标
         std::vector<int> ciao;
+        // rpai[i] 是前 i 个顶点的入边总数
         std::vector<int> rpai;
+        // 存储所有顶点的入边源
         std::vector<int> ciai;
-		std::vector<prop_t> eProps;
-		std::vector<prop_t> vProps;
+        // 边属性
+        std::vector<prop_t> eProps;
+        // 顶点属性
+        std::vector<prop_t> vProps;
 
         // The CSR is constructed based on the simple graph
         explicit CSR(const Graph &g);

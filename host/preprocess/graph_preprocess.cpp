@@ -6,13 +6,17 @@
 #include <algorithm>    // std::swap
 #include <iomanip>
 
+// 按目标顶点ID划分
+// 按PARTITION_SIZE划分
 partition_container_dt partitionGraph (CSR* csr) {
 
+    // 初始换返回变量
     partition_container_dt partition_container;
     int num_vertex = csr->vertexNum;
     partition_container.num_graph_vertices = num_vertex;
     partition_container.num_graph_edges = csr->edgeNum;
 
+    // 进行内存分配
     partition_container.src_prop_dev.resize(NUM_KERNEL);
     partition_container.src_prop_ext_ptr.resize(NUM_KERNEL);
 
@@ -22,10 +26,12 @@ partition_container_dt partitionGraph (CSR* csr) {
 
     partition_container.dst_tmp_prop_host.resize(NUM_VERTEX_ALIGNED, 0);
 
+    // 存储源顶点属性；NUM_VERTEX_ALIGNED 用于按分区大小对齐
     partition_container.vertex_property.resize(1 * NUM_VERTEX_ALIGNED); //one for
     for(int i = 0; i < num_vertex; i ++)
         partition_container.vertex_property[i] = (csr->vProps[i]); 
 
+    // 计算并存储出度
     partition_container.outdegree_host.resize(1 * NUM_VERTEX_ALIGNED); //one for
     for(int i = 0; i < num_vertex; i ++)
         partition_container.outdegree_host[i] = csr->rpao[i + 1] - csr->rpao[i]; 
@@ -34,17 +40,22 @@ partition_container_dt partitionGraph (CSR* csr) {
     std::fill(last_src_buffer.begin(), last_src_buffer.end(), 0);
 
     for (int u = 0; u < num_vertex; u++){
+        // 遍历出边的行指针
         for (int ciao_idx = csr->rpao[u]; ciao_idx < csr->rpao[u + 1]; ciao_idx++) {
             uint src = u; 
             uint dst = csr->ciao[ciao_idx];
+            // 根据dst进行划分
             uint part_id = (uint)(dst / PARTITION_SIZE);
             
             // avoid a set of edges across multiple src buffers.
             uint current_src_buffer = floor(src / SRC_BUFFER_SIZE);
 
+            // 如果当前源缓冲区与上一个源缓冲区不同，则需要进行填充
             if(current_src_buffer!=last_src_buffer[part_id]){
+                // 计算当前分区中边的数量是否为8的倍数
                 int mod8 = (partition_container.P[part_id].edge_array_host.size() / 2) % 8;
                 if(mod8){
+                    // 如果当前分区中边的数量不是8的倍数，则需要进行填充
                     for (int k = 0; k < (8 - mod8); k ++) {
                         uint last_src = partition_container.P[part_id].edge_array_host.end()[-2]; 
                         uint dst = ENDFLAG | 0x80000000; // they won't be processed if the most significant bit is set to 1.
@@ -95,6 +106,9 @@ partition_container_dt partitionGraph (CSR* csr) {
     return partition_container;
 }
 
+// 顶点重排序
+// - 按入度降序重排，使热点顶点邻近
+// - 可选局部乱序以减少偏向
 //reorder vertices according to the outdegree of the vertices...
 void reorderGraph(CSR* csr){
     //std::vector<std::vector<uint, aligned_allocator<uint> > > part_edge_array_host(MAX_NUM_PARTITION);
@@ -111,6 +125,7 @@ void reorderGraph(CSR* csr){
     //vid_reorder: index: new vertex ID; value: orginal vertex ID
     std::vector<int> vid_reorder(num_vertex);
     std::iota(vid_reorder.begin(), vid_reorder.end(), 0);
+    // 按照入度定义相应的比较器
     //reorder according "Indegree" and record their indices
     auto comparator = [&in_degree](int a, int b){ return in_degree[a] > in_degree[b]; }; 
     std::sort(vid_reorder.begin(), vid_reorder.end(), comparator);

@@ -91,11 +91,13 @@ Graph::Graph(const std::string& gName) {
     }
 }
 
+// 构建图结构
 CSR::CSR(const Graph &g) : vertexNum(g.vertexNum), edgeNum(g.edgeNum) {
     rpao.resize(vertexNum + 1);
     rpai.resize(vertexNum + 1);
     rpao[0] = 0;
     rpai[0] = 0;
+    // 利用前缀和的形式进行存储
     for (int i = 0; i < vertexNum; i++) {
         rpao[i + 1] = rpao[i] + g.vertices[i]->outDeg;
         rpai[i + 1] = rpai[i] + g.vertices[i]->inDeg;

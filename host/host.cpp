@@ -60,6 +60,7 @@ int main(int argc, char **argv) {
     //******************************************** Reorder graph *********************************************//
 #if VERTEX_REORDER_ENABLE == 1
     DEBUG_PRINTF("[INFO] Reordering graph...\n");
+    // 按照出度进行重排序
     reorderGraph(csr);
 #endif
     //********************************************************************************************************//
@@ -76,6 +77,7 @@ int main(int argc, char **argv) {
     // *******************************************************************************************************//
 
     //******************************* Conduct graph partitioning *********************************************//
+    // 进行初步的partition
     DEBUG_PRINTF("Partitioning graph...\n");
     partition_container_dt partition_container = partitionGraph(csr);
     //********************************************************************************************************//
@@ -83,7 +85,7 @@ int main(int argc, char **argv) {
     int numD = 1;
         
     if(argc > 3) numD = atoi(argv[3]);
-     
+
     partition_container.num_dense_partitions = numD;
     // if(partition_container.num_dense_partitions > partition_container.num_partitions) return 1;
     //******************************* Schedule Partitions to kernels *****************************************//

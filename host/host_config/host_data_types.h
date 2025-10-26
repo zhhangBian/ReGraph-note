@@ -85,33 +85,48 @@ struct PartitionDescriptor{
 
 typedef 
 struct PartitionContainer{
+    // 顶点总数
     unsigned int            num_graph_vertices;
+    // 边总数
     unsigned int            num_graph_edges;
 
-	std::vector<uint,  aligned_allocator<uint>>     vertex_property;
-	std::vector<prop_t, aligned_allocator<prop_t>>  edge_property;
+    // 对齐的顶点属性：用于GAS计算
+    std::vector<uint,  aligned_allocator<uint>>     vertex_property;
+    std::vector<prop_t, aligned_allocator<prop_t>>  edge_property;
 
+    // partition总数
     unsigned int            num_partitions;
+    // 原始分区描述符列表
     std::vector<partition_descriptor_dt> P;
 
+    // dense partition总数
     unsigned int            num_dense_partitions;
+    // sparse partition总数
     unsigned int            num_sparse_partitions;
 
+    // dense P
     std::vector<partition_descriptor_dt> DP;
+    // sparse P
     std::vector<partition_descriptor_dt> SP;
 
 
+    // 源属性设备缓冲区
     std::vector<cl::Buffer> src_prop_dev;
     std::vector<cl_mem_ext_ptr_t> src_prop_ext_ptr;
 
+    // 临时目标属性主机缓冲区
     std::vector<uint,  aligned_allocator<uint>>  dst_tmp_prop_host;
+    // 临时目标属性设备缓冲区
     std::vector<cl::Buffer> dst_tmp_prop_dev;
     std::vector<cl_mem_ext_ptr_t> dst_tmp_prop_ext_ptr;
 
-	std::vector<uint,  aligned_allocator<uint>>     outdegree_host;
+    // 出度主机缓冲区
+    std::vector<uint,  aligned_allocator<uint>>     outdegree_host;
+    // 出度设备缓冲区
     cl::Buffer outdegree_dev;
     cl_mem_ext_ptr_t outdegree_ext_ptr;
 
+    // 应用源属性设备缓冲区
     cl::Buffer apply_src_prop_dev;
     cl_mem_ext_ptr_t apply_src_prop_ptr;
 
