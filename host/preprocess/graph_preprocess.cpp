@@ -70,6 +70,7 @@ partition_container_dt partitionGraph (CSR* csr) {
         }
     }
 
+    // 最终填充：使每个分区边数为8的倍数，每个cycle读取8条边，尾部不足部分补齐伪边
     // We make number of edges of a partition aligned with 8 as the acc can read 8 edges per cycle.
     // we pad a pseudo edge with format of <lastsrc, endflag> to minize the access distance of src and use the endflag
     // as the termination for acc functions. 
@@ -80,6 +81,7 @@ partition_container_dt partitionGraph (CSR* csr) {
             uint last_src =  partition_container.P[part_id].edge_array_host.end()[-2]; 
             //uint last_dst =  partition_container.P[part_id].edge_array_host.end()[-1]; 
             for (int k = 0; k < (8 - (current_num_edges % 8)); k ++) {
+                // 最高位为1：dst | 0x80000000 表示终止边，硬件忽略；src也可最高位置1以触发终止
                 // pseudo-edge
                 uint src = last_src | 0x80000000; 
                 uint dst = ENDFLAG | 0x80000000; // they won't be processed if the most significant bit is set to 1.
@@ -145,6 +147,7 @@ void reorderGraph(CSR* csr){
     // }
     
 
+    // 局部打乱以降低偏向
     std::srand ( unsigned ( std::time(0) ) ); //&& (i % 2 == 1)
     std::size_t shuffle_size = vid_reorder.size() / (MAX_NUM_PARTITION);
     for (int k = 0; k < (MAX_NUM_PARTITION); k ++){

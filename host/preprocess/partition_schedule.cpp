@@ -26,6 +26,8 @@ int schedulePartitions(partition_container_dt &partition_container){
     partition_container.num_dense_partitions = 0;
 #endif
 
+    // 前 num_dense_partitions 个为dense，其余为sparse
+    // 这里的排序方式是**出度**，之前经过一次reorder
     std::cout << "num_dense_partitions: " << partition_container.num_dense_partitions << std::endl;
     partition_container.DP.resize(partition_container.num_dense_partitions);
 
@@ -34,12 +36,12 @@ int schedulePartitions(partition_container_dt &partition_container){
     DEBUG_PRINTF("[INFO] Paritioning dense paritions into subparitions...\n");
     for (uint i = 0; i < partition_container.num_dense_partitions; i ++){
 
-        // 子分区数量
+        // 确定子分区数量
         partition_container.DP[i].num_subpartitions = LITTLE_KERNEL_NUM; // this number should be the number of big kernels
         partition_container.DP[i].subP.resize(partition_container.DP[i].num_subpartitions);
 
         // ********************* magic estimation logic ! *******************************//
-        // 估计相关的参数
+        // 以 64 条边为一个滑动窗口，累计每个窗口的源顶点跨度，并折算为预测周期
         #define EDGES_PER_CYCLE 8
         #define SRC_PER_CYCLE 10
         #define L_PROFILE_WINDOW 64
@@ -60,6 +62,7 @@ int schedulePartitions(partition_container_dt &partition_container){
             uint src = partition_container.P[i].edge_array_host[eid * 2] & 0x7fffffff;
             uint window = (int) (eid/L_PROFILE_WINDOW);
             if(window != last_window){
+                // 使用 (src-last_src) / SRC_PER_CYCLE 表征顶点跳转耗时
                 estimated_cycles += ((src-last_src)/SRC_PER_CYCLE) > (L_PROFILE_WINDOW/EDGES_PER_CYCLE)?
                                      ((src-last_src)/SRC_PER_CYCLE) : (L_PROFILE_WINDOW/EDGES_PER_CYCLE);
                 //estimated_cycles +=    (SRC_BUFFER_SIZE/SRC_PER_CYCLE) + ((eid - last_eid)/EDGES_PER_CYCLE);
@@ -86,7 +89,9 @@ int schedulePartitions(partition_container_dt &partition_container){
         std::vector<uint> split_range;
         split_range.push_back(last_eid_marker); std::cout << last_eid_marker << "  "; //for the first subparition...
         for (uint k = 0; k < eid_estcycle_marker.size(); k ++){
+            // 按照目标进行划分
             uint subpi = eid_estcycle_marker[k].first / target_cylces_per_subp;
+            // 跨分区加入切分点
             if(subpi != last_subpi){
                 last_subpi = subpi;
                 last_eid_marker = eid_estcycle_marker[k].second;
@@ -95,19 +100,29 @@ int schedulePartitions(partition_container_dt &partition_container){
         }
         split_range.push_back(partition_container.P[i].edge_array_host.size()/2); //for the first subparition...
 
+        // 复制相应的数据到子分区
         for (uint subpi = 0; subpi < split_range.size() -1; subpi ++){
+            // 计算该子分区包含多少条边
+            // 2 代表每条边的两个顶点 src dst
             partition_container.DP[i].subP[subpi].edge_array_host.resize(2 * (split_range[subpi+1] - split_range[subpi]));
+            // 从原始分区复制边数据
             std::copy(
+                // 源数据范围
                 partition_container.P[i].edge_array_host.begin() + (split_range[subpi] * 2),
+                // 目标数据范围
                 partition_container.P[i].edge_array_host.begin() + (split_range[subpi+1] * 2),
+                // 目标数据指针
                 partition_container.DP[i].subP[subpi].edge_array_host.begin()
             );
         }
 
+        // 处理空子分区
         for (uint subpi = 0; subpi < partition_container.DP[i].num_subpartitions; subpi ++){
             //std::cout << i << "th SP " << subpi << "th subp edge num: "<< partition_container.SP[i].subP[subpi].edge_array_host.size() / 2 << " . " << std::endl;
             if(0 == (partition_container.DP[i].subP[subpi].edge_array_host.size() / 2)){
                 for(int di = 0; di < 8; di ++) {
+                    // 最高标志位代表为空
+                    // 插入 8 条末尾标记边（最高位置 1），避免硬件阻塞
                     uint src = partition_container.P[i].edge_array_host.end()[-2] | 0x80000000;
                     uint dst = ENDFLAG | 0x80000000; // they won't be processed if the most significant bit is set to 1.
                     partition_container.DP[i].subP[subpi].edge_array_host.insert(partition_container.DP[i].subP[subpi].edge_array_host.end(), {src, dst});
