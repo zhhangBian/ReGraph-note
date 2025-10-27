@@ -27,7 +27,7 @@ int schedulePartitions(partition_container_dt &partition_container){
 #endif
 
     // 前 num_dense_partitions 个为dense，其余为sparse
-    // 这里的排序方式是**出度**，之前经过一次reorder
+    // 这里的排序方式是**入度**，之前经过一次reorder
     std::cout << "num_dense_partitions: " << partition_container.num_dense_partitions << std::endl;
     partition_container.DP.resize(partition_container.num_dense_partitions);
 
@@ -134,6 +134,7 @@ int schedulePartitions(partition_container_dt &partition_container){
             partition_container.DP[i].subP[k].num_edges = partition_container.DP[i].subP[k].edge_array_host.size() / 2;
             //std::cout << i << "th DP " << k << "th subp edge nume mod 8: "<< partition_container.DP[i].subP[k].num_edges % 8 << " . " << std::endl;
             partition_container.DP[i].subP[k].dst_offset = partition_container.P[i].dst_offset;
+            // 限定每个Dense子分区的目标顶点数量不超过 LITTLE_KERNEL_DST_BUFFER_SIZE = 65536
             partition_container.DP[i].subP[k].dst_len = LITTLE_KERNEL_DST_BUFFER_SIZE;
         }
     }
@@ -300,6 +301,7 @@ int schedulePartitions(partition_container_dt &partition_container){
             partition_container.SP[i].subP[k].num_edges = partition_container.SP[i].subP[k].edge_array_host.size() / 2;
             //std::cout << i << "th SP " << k << "th subp edge nume mod 8: "<< partition_container.SP[i].subP[k].num_edges % 8 << " . " << std::endl;
             partition_container.SP[i].subP[k].dst_offset = partition_container.SP[i].dst_offset;
+            // 每个Sparse子分区的目标顶点数量不超过 BIG_KERNEL_DST_BUFFER_SIZE = 524288（大核目标缓冲区更大）
             partition_container.SP[i].subP[k].dst_len = BIG_KERNEL_DST_BUFFER_SIZE;
         }
     }
@@ -355,6 +357,7 @@ int transferPartitions(partition_container_dt &partition_container, acc_descript
         }
     }
     // report the usage of memory bank for edge lists....
+    // 限定边数以限定HBM用量
     for (int i = 0; i < 32; i++) {
         int size_in_MB = hbm_bank_usage[i] * sizeof(uint) / 1024 / 1024;
         std::cout << "[INFO] " << i << "th kernel uses " << size_in_MB << " MB memory for edge list." << std::endl;
