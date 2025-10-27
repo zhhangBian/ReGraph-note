@@ -86,6 +86,7 @@ int main(int argc, char **argv) {
         
     if(argc > 3) numD = atoi(argv[3]);
 
+    // 直接指定dense分区的数量，剩余分区合并并分配到 SP
     partition_container.num_dense_partitions = numD;
     // if(partition_container.num_dense_partitions > partition_container.num_partitions) return 1;
     //******************************* Schedule Partitions to kernels *****************************************//
@@ -93,6 +94,7 @@ int main(int argc, char **argv) {
     schedulePartitions(partition_container);
 
 
+    // 将partition数据传输到device，并分配HBM bank
     uint fit_hbm = transferPartitions(partition_container, acc);
     // if(!fit_hbm) continue;
     //********************************************************************************************************//

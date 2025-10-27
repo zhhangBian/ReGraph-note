@@ -15,7 +15,7 @@ int schedulePartitions(partition_container_dt &partition_container){
     //partition_container.num_dense_partitions = partition_container.num_partitions;
     //partition_container.num_dense_partitions = 0; //partition_container.num_partitions; //std::min(2, partition_container.num_partitions);
 // 同时支持大核/小核：限在分区总数内
-    #if (LITTLE_KERNEL_NUM && BIG_KERNEL_NUM)
+#if (LITTLE_KERNEL_NUM && BIG_KERNEL_NUM)
     if(partition_container.num_dense_partitions > partition_container.num_partitions)
         partition_container.num_dense_partitions = partition_container.num_partitions;
 // 仅小核：全为密集分区
@@ -30,7 +30,7 @@ int schedulePartitions(partition_container_dt &partition_container){
     partition_container.DP.resize(partition_container.num_dense_partitions);
 
     // 为dense分区进行划分
-    // 为每个密集分区生成多个子分区，分配到多个小核并行处理
+    // 为每个密集分区生成LITTLE_KERNEL_NUM个子分区，分配到多个小核并行处理
     DEBUG_PRINTF("[INFO] Paritioning dense paritions into subparitions...\n");
     for (uint i = 0; i < partition_container.num_dense_partitions; i ++){
 
@@ -124,16 +124,22 @@ int schedulePartitions(partition_container_dt &partition_container){
     }
 
     //**************************************************************************************************************************//
+    // 合并多个分区后再划分子分区
     DEBUG_PRINTF("[INFO] Merging sparse paritions...\n");
+    // 按照8为单位合并为大分区
     #define MERGE_NUM 8
+    // 前 num_dense_partitions 为 dense，其余为 sparse
     partition_container.num_sparse_partitions = partition_container.num_partitions - partition_container.num_dense_partitions;
     partition_container.num_sparse_partitions = ((partition_container.num_sparse_partitions + (MERGE_NUM-1)) / MERGE_NUM);
     partition_container.SP.resize(partition_container.num_sparse_partitions);
     std::cout << "num_sparse_partitions: " << partition_container.num_sparse_partitions << std::endl;
 
+    // 得到**合并后的**分区数目，再对实际的小分区进行合并
+    // i表示遍历到的大分区
     for (uint i = 0; i < partition_container.num_sparse_partitions; i ++){
 
         std::vector<uint> tmp_edge_buffer;
+        // 遍历8个小块，拼接到临时缓冲区
         for(int k = 0; k < MERGE_NUM; k ++){
             uint parti = partition_container.num_dense_partitions + i * MERGE_NUM + k;
             if (parti < partition_container.num_partitions)
@@ -143,24 +149,29 @@ int schedulePartitions(partition_container_dt &partition_container){
                                         );
         }
 
+        // 重组数据结构
         std::vector<std::pair<uint, uint>> edge_pair_array;
 
         for(uint k = 0; k < tmp_edge_buffer.size()/2; k++){
             edge_pair_array.push_back(std::make_pair(tmp_edge_buffer[2*k], tmp_edge_buffer[2*k + 1]));
         }
 
+        // 按照时序进行排序，分配给相应的大核
         // Sort the vector of pairs
         std::sort(std::begin(edge_pair_array), std::end(edge_pair_array),
+                    // 去除高位（标志位），再按src进行排序
                     [&](const auto& a, const auto& b)
                     {return (a.first & (0x80000000 -1)) < (b.first & (0x80000000 -1));}
                 );
 
+        // 将相应的结果写回缓冲区
         for(uint k = 0; k < tmp_edge_buffer.size()/2; k++){
             partition_container.SP[i].edge_array_host.emplace_back(edge_pair_array[k].first);
             //printf("%d \t", edge_pair_array[k].first);
             partition_container.SP[i].edge_array_host.emplace_back(edge_pair_array[k].second);
         }
 
+        // 设置结果分区元数据
         partition_container.SP[i].num_edges = partition_container.SP[i].edge_array_host.size() / 2;
         partition_container.SP[i].dst_offset = partition_container.P[partition_container.num_dense_partitions + i * MERGE_NUM].dst_offset;
         partition_container.SP[i].dst_len = BIG_KERNEL_DST_BUFFER_SIZE;
@@ -168,14 +179,18 @@ int schedulePartitions(partition_container_dt &partition_container){
         //std::cout << partition_container.SP[i].dst_offset << std::endl;
     }
 
-    // 为sparse分区进行划分
+    // 切分合并后的sparse分区
     DEBUG_PRINTF("[INFO] Paritioning sparse paritions into subparitions...\n");
+    // 不按“边数平均”切分，而是按估算处理时间切分，使3个大核负载接近。
     for (uint i = 0; i < partition_container.num_sparse_partitions; i ++){
 
+        // 每个 Sparse 分区切为 BIG_KERNEL_NUM 份
         partition_container.SP[i].num_subpartitions = BIG_KERNEL_NUM; // this number should be the number of big kernels
         partition_container.SP[i].subP.resize(partition_container.SP[i].num_subpartitions);
 
         // ********************* magic estimation logic ! *******************************//
+        // 与 Dense 的小窗口不同，Sparse 采用更细化的估算
+        // 按照cacheline估算相应的时间
         #define EDGES_PER_CYCLE 8
         #define MEMORY_REQ_CYCLE 1
         #define PROFILE_WINDOW SRC_BUFFER_SIZE
@@ -188,9 +203,14 @@ int schedulePartitions(partition_container_dt &partition_container){
         uint last_src_cacheline = 0;
         uint last_src_set_cacheline = 0;
         uint have_request_flag = 0;
+        // 遍历每一条边,估算访问开销
         for (uint eid = 0; eid < partition_container.SP[i].edge_array_host.size()/2; eid ++){
+            // 读取边的源顶点
             uint src = partition_container.SP[i].edge_array_host[eid * 2] & 0x7fffffff;
+            // 计算源顶点所在的cacheline
             uint src_cacheline = src >> 4;
+            // 如果源顶点所在的cacheline与上一个源顶点所在的cacheline不同，则需要计算访问开销
+            // 当 cacheline 切换时，将跳过的 cacheline 数除以 16 后累加到 src_access_cycles；不足 1 按 1 计，避免瞬时突发影响过大
             if(src_cacheline != last_src_cacheline) {
                 double projected_cycles = (src_cacheline - last_src_cacheline) / 16.0;
                 if(projected_cycles < 1) projected_cycles = 1;
@@ -202,6 +222,7 @@ int schedulePartitions(partition_container_dt &partition_container){
                 last_src_set_cacheline = src_cacheline;
             };
 
+            // 每 4096 条边记录一次累积周期与边索引到 eid_estcycle_marker
             if(!(eid % PROFILE_WINDOW)){
                 estimated_cycles +=  (src_access_cycles + (PROFILE_WINDOW/EDGES_PER_CYCLE));
                 //estimated_cycles += src_access_cycles > (PROFILE_WINDOW/EDGES_PER_CYCLE)? : src_access_cycles, PROFILE_WINDOW/EDGES_PER_CYCLE;
@@ -216,13 +237,16 @@ int schedulePartitions(partition_container_dt &partition_container){
                 << eid_estcycle_marker.size() << " eid_marker_size. "
                 << std::endl;
 
+        // 计算切分点
         partition_container.SP[i].est_cycles = estimated_cycles;
+        // 计算每个子分区的时间目标
         uint target_cylces_per_subp = estimated_cycles / partition_container.SP[i].num_subpartitions + 1;
         uint last_subpi = 0;
         uint last_eid_marker = 0;
         std::vector<uint> split_range;
         split_range.push_back(0); //for the first subparition...
         for (uint k = 0; k < eid_estcycle_marker.size(); k ++){
+            // 按照除后的目标作为分区时间目标
             uint subpi = eid_estcycle_marker[k].first / target_cylces_per_subp;
             if(subpi != last_subpi){
                 split_range.push_back(eid_estcycle_marker[k].second);
@@ -232,6 +256,7 @@ int schedulePartitions(partition_container_dt &partition_container){
         }
         split_range.push_back(partition_container.SP[i].edge_array_host.size()/2); //for the first subparition...
 
+        // 复制相应的数据到子分区
         for (uint subpi = 0; subpi < split_range.size() - 1; subpi ++){
             partition_container.SP[i].subP[subpi].edge_array_host.resize(2 * (split_range[subpi+1] - split_range[subpi]));
             std::copy(
@@ -242,6 +267,8 @@ int schedulePartitions(partition_container_dt &partition_container){
         }
 
 
+        // 处理空白子分区
+        // 如果子分区没有边，则填充一个dummy边:避免硬件闲置
         for (uint subpi = 0; subpi < partition_container.SP[i].num_subpartitions; subpi ++){
             //std::cout << i << "th SP " << subpi << "th subp edge num: "<< partition_container.SP[i].subP[subpi].edge_array_host.size() / 2 << " . " << std::endl;
             if(0 == (partition_container.SP[i].subP[subpi].edge_array_host.size() / 2)){
@@ -253,6 +280,7 @@ int schedulePartitions(partition_container_dt &partition_container){
             }
         }
 
+        // 设置结果分区元数据
         for (uint k = 0; k < partition_container.SP[i].num_subpartitions; k ++){
             partition_container.SP[i].subP[k].num_edges = partition_container.SP[i].subP[k].edge_array_host.size() / 2;
             //std::cout << i << "th SP " << k << "th subp edge nume mod 8: "<< partition_container.SP[i].subP[k].num_edges % 8 << " . " << std::endl;
@@ -280,6 +308,7 @@ int schedulePartitions(partition_container_dt &partition_container){
 }
 
 
+// 将分区数据从主机传至 FPGA 设备，并分配 HBM bank
 // transfer edge lists vertex properties according to the dstination kernel's connectivity.
 int transferPartitions(partition_container_dt &partition_container, acc_descriptor_dt &acc){
 
