@@ -134,6 +134,7 @@ int main(int argc, char **argv) {
         // enqueue big and little kernels
         for (uint i = 0; i < partition_container.num_dense_partitions; i++) {
             for(uint subpart_id = 0; subpart_id < partition_container.DP[i].num_subpartitions; subpart_id ++){
+                // 对于不同的partition分配不同的kernel
                 uint krnl_id = partition_container.DP[i].subP[subpart_id].kernel_id;
                 uint part_edge_num = partition_container.DP[i].subP[subpart_id].num_edges;
                 uint part_dst_offset =  partition_container.DP[i].subP[subpart_id].dst_offset;
@@ -143,6 +144,7 @@ int main(int argc, char **argv) {
                 OCL_CHECK(err, err = acc.little_gs_krnls[krnl_id].setArg(2, part_dst_offset));
                 // Invoking the kernel
                 DEBUG_PRINTF("%dth DP: %dth subP -> CU %d : %d edges (%0.2f%%)...\n", i, subpart_id, krnl_id, part_edge_num, double(part_edge_num)/num_edge*100);
+                // 通过 enqueueTask 放入 queue，执行过程以队列的调度为准
                 OCL_CHECK(err, err = acc.little_gs_queue[krnl_id].enqueueTask(acc.little_gs_krnls[krnl_id], NULL, &partition_container.DP[i].subP[subpart_id].event));
             }
         }
@@ -164,6 +166,7 @@ int main(int argc, char **argv) {
         DEBUG_PRINTF("Enqueue kernels finished...\n");
         auto kernel_start = std::chrono::high_resolution_clock::now();
 
+        // 等待队列上的任务完成
         for (int i = 0; i < LITTLE_KERNEL_NUM; i ++) acc.little_gs_queue[i].finish();
         DEBUG_PRINTF("LITTLE_KERNEL finished...\n");
         for (int i = 0; i < BIG_KERNEL_NUM; i ++) acc.big_gs_queue[i].finish();

@@ -307,8 +307,10 @@ int schedulePartitions(partition_container_dt &partition_container){
     }
 
     //3. schedule dense and sparse paritions to little and big kernels ***************************//
+    // 将partition分配到具体的kernel
     DEBUG_PRINTF("[INFO] Scheduling dense and sparse paritions to little and big kernels...\n");
     for (uint part_id = 0; part_id < partition_container.num_dense_partitions; part_id ++){
+        // 奇数 partition 时逆序分配；偶数时正序分配
         for(uint subpart_id = 0; subpart_id < partition_container.DP[part_id].num_subpartitions; subpart_id ++){
             partition_container.DP[part_id].subP[subpart_id].kernel_id = (part_id & 0x1)? (LITTLE_KERNEL_NUM - 1- subpart_id) : subpart_id;
         }
